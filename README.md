@@ -1,15 +1,29 @@
-node-u2f
+AuthDog
 ==================
 
-Serverside U2F library for Node.js. Provides functionality for registering U2F devices and authenticate with said devices.
+Server side U2F/FIDO library for Node.js. Provides functionality for registering and authenticating with U2F devices.  
 
-This more or less a direct port of Yubico's server-side libraries for Java, PHP and Python (https://github.com/Yubico/java-u2flib-server and friends).
+Based on @jacobmarshall's fork of @emilecantin's initial [implementation](https://github.com/emilecantin/node-u2flib-server). Altered to interact with the [high level interface](https://fidoalliance.org/specs/fido-u2f-v1.0-nfc-bt-amendment-20150514/fido-u2f-javascript-api.html#high-level-javascript-api) defined by the Fido specifications, and implemented by the [Yubico reference client api](https://demo.yubico.com/js/u2f-api.js).  
+
+Rebuilt to support multiple u2f tokens, with a focus on simple integration (ie. human readable errors, solid input validation and sanitisation).  
+
+Check out a simple example at [ryankurte/authdog-example](https://github.com/ryankurte/authdog-example).  
+
+Status
+------
+
+Module is a work in progress, functionally working but needs better input validation and testing.  
+API is also subject to change if anything is found to be missing or better layouts become apparent.  
+CLI interface is currently fairly broken.  
+
+[![Build Status](https://travis-ci.org/ryankurte/authdog.svg)](https://travis-ci.org/ryankurte/authdog)  [![Dependencies](https://david-dm.org/ryankurte/authdog.svg)](https://david-dm.org/ryankurte/authdog) [![NPM](https://img.shields.io/npm/v/authdog.svg)](https://www.npmjs.com/package/authdog) 
+
 
 Installation
 ------------
 
 ```
-npm install node-u2f
+npm install authdog
 ```
 
 
@@ -17,130 +31,122 @@ Usage
 -----
 
 ```
-var u2f = require('node-u2f');
+var u2f = require('authdog');
 ```
 
 The u2f protocol consists of two main actions:
+- Registration, in which we associate specific device(s) with a user.
+- Authentication, in which we verify that the user is in possession of a previously registered device.
 
-- Registration, in which we associate a specific device with a user.
-- Authentication, in which we verify that the user is in possession of the previously registered device.
+Each of these actions consist of two phases: challenge and response.  
 
-Each of these actions consist of two phases: challenge and response.
+An application implementing U2F needs to store a set of information about tokens associated with each user account, henceforth referred to as 'token metadata' consisting of a key handle used to identify the keypair, the public key of the token, the usage count of the token, and optionally the token certificate.  
 
-### Registration
+### Device Registration
 
-To start registration, simply call:
+To start device registration use:
+```
+// Generate a registration request
+u2f.startRegistration(appId, existingKeys, {requestId: N, timeoutSeconds: 100})
+.then(function(registrationRequest) {
+  // Save registration request to session for later use
+  ...
+
+  // Send registration request to client
+  ...
+
+}, function(error) {
+  // Handle registration request error
+  ...
+
+});
 
 ```
-/**
- * Initiates the registration of a device.
- *
- * @param appId the U2F AppID. Set this to the Web Origin of the login page, unless you need to
- * support logging in from multiple Web Origins. (Not supported for now)
- * @return a RegisterRequest, which should be sent to the client and temporary saved by the
- * server.
- */
-var registerRequest = u2f.startRegistration('<YOUR_APP_ID>');
-```
 
-This will give a RegisterRequest object (see https://fidoalliance.org/specs/fido-u2f-javascript-api-v1.0-rd-20141008.pdf, section 4.1.1), suitable to use with client-side libraries. It should be kept around temporarily, because it is needed to finish the registration process.
+Where existingKeys is an array of token metadata for tokens already bound to the user account.  
 
-Once the client has responded with a RegisterResponse object (see https://fidoalliance.org/specs/fido-u2f-javascript-api-v1.0-rd-20141008.pdf, section 4.1.2), you can call:
+The registration request object must be stored for use when validating the client response in the next step.  
 
-```
-/**
- * Finishes a previously started registration.
- *
- * @param registerRequest The request previously sent to the client.
- * @param registerResponse The response from the device/client.
- * @return a DeviceRegistration object, holding information about the registered device. Servers should persist this.
- */
-var deviceRegistration = u2f.finishRegistration(registerRequest, registerResponse);
-```
-This will either throw an exception with an error code (see the Errors section) if there is an error during validation of the RegisterResponse, or return a DeviceRegistration object. The DeviceRegistration object shoud be persisted on the server, as it's needed for future authentications. Its structure is the following:
+It can then be used on the client with `u2f.register(req.appId, req.registerRequests, req.registeredKeys, registerCallback, req.timeoutSeconds);`.
 
+To finalise device registration use:
 ```
-{
-  keyHandle: '', // A variable-length base64 string.
-  publicKey: '', // A 65-byte base64 string.
-  certificate: ''// A variable-length PEM-encoded certificate. It is not needed for future operations, but it validates the issuer of the authentication device. You may validate it if you want.
-}
+// Process registration response
+u2f.finishRegistration(registrationRequest, reqistrationResponse)
+.then(function(registrationStatus) {
+  // Save device meta structure for future authentication use
+  var meta = {
+    keyHandle: registrationStatus.keyHandle, 
+    publicKey: registrationStatus.publicKey,
+    certificate: registrationStatus.certificate
+  }
+  ...
+
+}, function(error) {
+  // Handle registration error
+  ...
+
+});
+
+
 ```
 
 ### Authentication
 
-The authentication process mirrors relatively closely the registration process. To start an authentication, call:
+To start the authentication process call:
+```
+// Generate authentication request
+var authRequest = u2f.startAuthentication(appId, existingKeys, {requestId: N, timeoutSeconds: 10});
+.then(function(registrationRequest) {
+  // Save authentication request to session for later use
+  ...
+
+  // Send authentication request to client
+  ...
+  
+}, function(error) {
+  // Handle authentication request error
+  ...
+
+});
 
 ```
-/**
- * Initiates the authentication process.
- *
- * @param appId the U2F AppID. Set this to the Web Origin of the login page, unless you need to
- * support logging in from multiple Web Origins.
- * @param deviceRegistration the DeviceRegistration for which to initiate authentication.
- * @return a SignRequest which should be sent to the client and temporary saved by
- * the server.
- */
-var signRequest = u2f.startAuthentication(appId, deviceRegistration);
-```
-This will give a SignRequest object (again, see https://fidoalliance.org/specs/fido-u2f-javascript-api-v1.0-rd-20141008.pdf, section 4.2.1), suitable to use with client-side libraries. Again, it should be kept around temporarily, because it is needed to finish the authentication process.
 
-Once the client has responded with a SignResponse object (see https://fidoalliance.org/specs/fido-u2f-javascript-api-v1.0-rd-20141008.pdf, section 4.2.2), you can call:
+Where existingKeys is an array of token metadata for viable authentication tokens (those registered to the users account).  
 
+This registration request object must be stored for use when validating the client authentication response in the next step.  
+It can then be used on the client with `u2f.sign(req.appId, req.challenge, req.registeredKeys, signatureCallback, req.timeoutSeconds);`.
+
+To finalise the authentication process call:
 ```
-/**
- * Finishes a previously started authentication.
- *
- * @param signRequest The challenge sent to the client.
- * @param signResponse The response from the device/client.
- * @param deviceRegistration the DeviceRegistration for which the authentication was initiated.
- * @return Some information about the authentication
- */
-var deviceAuthentication = u2f.finishAuthentication(signRequest, signResponse, deviceRegistration);
+// Check authentication response
+u2f.finishAuthentication(signRequest, signResponse, deviceRegistration)
+.then(function(authenticationStatus) {
+  // Authentication ok!
+  ...
+
+}, function(error) {
+  // Handle authentication error
+  ...
+
+});
+
 ```
 
-This will either throw an exception with an error code (see the Errors section) if there is an error during validation of the SignResponse, or return a DeviceAuthentication object. The DeviceAuthentication object shoud be persisted on the server, as it's needed for future authentications. Its structure is the following:
+For further examples, check out [test.js](./test.js).
 
+Notes
+-----
+
+The high level client interface referred to above is defined as follows:
 ```
-{
-  userPresence: '', // Should always be 1, meaning the presence of the user has been verified
-  counter: '' // A counter that counts the number of authentications made by the device. Used to detect device cloning. You should check that it is increasing.
-}
-```
-
-### Errors
-
-The following errors can be thrown:
-
-```
-{
-  registration: { // Registration errors
-    NO_CLIENT_DATA: 101,
-    NO_TYPE: 102,
-    WRONG_TYPE: 103,
-    CHALLENGE_MISMATCH: 104,
-    NO_REGISTRATION_DATA: 105,
-    WRONG_RESERVED_BYTE: 106,
-    PUBLIC_KEY_ERROR: 107,
-    SIGNATURE_INVALID: 108,
-  },
-  authentication: { // Authentication errors
-    NO_KEY_HANDLE: 201,
-    NO_CLIENT_DATA: 202,
-    NO_SIGNATURE_DATA: 203,
-    WRONG_KEY_HANDLE: 204,
-    NO_TYPE: 205,
-    WRONG_TYPE: 206,
-    CHALLENGE_MISMATCH: 207,
-    SIGNATURE_INVALID: 208,
-  }
+interface u2f {
+    void register (DOMString appId, sequence<RegisterRequest> registerRequests, sequence<RegisteredKey> registeredKeys, function(RegisterResponse or Error) callback, optional unsigned long? opt_timeoutSeconds);
+    void sign (DOMString appId, DOMString challenge, sequence<RegisteredKey> registeredKeys, function(SignResponse or Error) callback, optional unsigned long? opt_timeoutSeconds);
 };
 ```
 
-They are all exposed under `u2f.errors`.
+------
 
-Roadmap / Development
----------------------
-
-- Add a web server example?
+If you have any questions, comments, or suggestions, feel free to open an issue or a pull request.
 
